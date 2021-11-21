@@ -1,5 +1,6 @@
 #include <variant>
 #include <vector>
+#include <type_traits>
 
 namespace {
     //https://stackoverflow.com/questions/2033110/passing-a-string-literal-as-a-type-argument-to-a-class-template
@@ -22,14 +23,21 @@ namespace {
 
     template<typename ...T>
     Visitor(T...) -> Visitor<T...>;
-
-    struct Number {int value;
-        int operator()([[maybe_unused]] int a, [[maybe_unused]] int b) const { throw; }};
-    struct Plus{constexpr int operator()(int a, int b) const { return a + b; }};
-    struct Minus{constexpr int operator()(int a, int b) const { return a - b; }};
-    struct Mult{constexpr int operator()(int a, int b) const { return a * b; }};
-    struct Div{constexpr int operator()(int a, int b) const { return a / b; }};
-    struct LeftPar{int operator()([[maybe_unused]] int a, [[maybe_unused]] int b) const { throw; }};
+ 
+    template<typename T> struct Number {T value;
+        T operator()([[maybe_unused]] T a, [[maybe_unused]] T b) const { throw; }};
+    template<typename T> struct Plus{constexpr T operator()(T a, T b) const { return a + b; }};
+    template<typename T> struct Minus{constexpr T operator()(T const a, T const b) const {
+        if constexpr (std::is_unsigned<T>::value) {
+            if (b > a) {
+                throw;
+            }
+        }
+        return a - b;
+    }};
+    template<typename T> struct Mult{constexpr T operator()(T a, T b) const { return a * b; }};
+    template<typename T> struct Div{constexpr T operator()(T a, T b) const { return a / b; }};
+    template<typename T> struct LeftPar{T operator()([[maybe_unused]] T a, [[maybe_unused]] T b) const { throw; }};
 
     enum type {
         NUMBER,
@@ -40,37 +48,40 @@ namespace {
         LEFTPAR
     };
 
-    using rpn_variant = std::variant<Number, Plus, Minus, Mult, Div, LeftPar>;
+    template<typename T>
+    using rpn_variant = std::variant<Number<T>, Plus<T>, Minus<T>, Mult<T>, Div<T>, LeftPar<T>>;
 
+    template<typename T>
     constexpr Visitor visitor_type {
-        []([[maybe_unused]] Number i) -> type {return type::NUMBER;},
-        []([[maybe_unused]] Plus i) -> type {return type::PLUS;},
-        []([[maybe_unused]] Minus i) -> type {return type::MINUS;},
-        []([[maybe_unused]] Mult i) -> type {return type::MULT;},
-        []([[maybe_unused]] Div i) -> type {return type::DIV;},
-        []([[maybe_unused]] LeftPar i) -> type {return type::LEFTPAR;}
+        []([[maybe_unused]] Number<T> i) -> type {return type::NUMBER;},
+        []([[maybe_unused]] Plus<T> i) -> type {return type::PLUS;},
+        []([[maybe_unused]] Minus<T> i) -> type {return type::MINUS;},
+        []([[maybe_unused]] Mult<T> i) -> type {return type::MULT;},
+        []([[maybe_unused]] Div<T> i) -> type {return type::DIV;},
+        []([[maybe_unused]] LeftPar<T> i) -> type {return type::LEFTPAR;}
     };
 
+    template<typename T>
     constexpr Visitor precedence_visitor {
-        []([[maybe_unused]] Number i) -> int {throw;},
-        []([[maybe_unused]] Plus i) -> int {return 2;},
-        []([[maybe_unused]] Minus i) -> int {return 2;},
-        []([[maybe_unused]] Mult i) -> int {return 3;},
-        []([[maybe_unused]] Div i) -> int {return 3;},
-        []([[maybe_unused]] LeftPar i) -> int {return 0;}
-
+        []([[maybe_unused]] Number<T> i) -> int {throw;},
+        []([[maybe_unused]] Plus<T> i) -> int {return 2;},
+        []([[maybe_unused]] Minus<T> i) -> int {return 2;},
+        []([[maybe_unused]] Mult<T> i) -> int {return 3;},
+        []([[maybe_unused]] Div<T> i) -> int {return 3;},
+        []([[maybe_unused]] LeftPar<T> i) -> int {return 0;}
     };
 
-    constexpr int do_rpn(std::vector<rpn_variant> const &rpn)
+    template<typename T>
+    constexpr T do_rpn(std::vector<rpn_variant<T>> const &rpn)
     {
-        std::vector<int> stack{};
+        std::vector<T> stack{};
         for (const auto part : rpn) {
-            if (type t = std::visit(visitor_type, part); t == NUMBER) {
+            if (type t = std::visit(visitor_type<T>, part); t == NUMBER) {
                 stack.push_back(std::get<NUMBER>(part).value);
             } else {
-                int right{stack.back()};
+                T const right{stack.back()};
                 stack.pop_back();
-                int left{stack.back()};
+                T const left{stack.back()};
                 stack.pop_back();
                 stack.push_back(std::visit([left, right](auto&& func){return func(left, right);}, part));
             }
@@ -94,15 +105,16 @@ namespace {
         return c == ')';
     }
 
-    constexpr rpn_variant variant_from_char(char c) {
+    template<typename T>
+    constexpr rpn_variant<T> variant_from_char(char c) {
         if (c == '+') {
-            return Plus{};
+            return Plus<T>{};
         } else if (c == '-') {
-            return Minus{};
+            return Minus<T>{};
         } else if (c == '*') {
-            return Mult{};
+            return Mult<T>{};
         } else if (c == '/') {
-            return Div{};
+            return Div<T>{};
         }
         throw;
     }
@@ -112,30 +124,30 @@ namespace {
         return (c == '+' || c == '-') ? 2 : (c == '*' || c == '/') ? 3 : 0;
     }
 
-    template<FixedString STR>
-    constexpr std::vector<rpn_variant> parse_str()
+    template<FixedString STR, typename T>
+    constexpr std::vector<rpn_variant<T>> parse_str()
     {
-        std::vector<rpn_variant> output{};
-        std::vector<rpn_variant> stack{};
+        std::vector<rpn_variant<T>> output{};
+        std::vector<rpn_variant<T>> stack{};
 
         for (std::size_t i = 0; i < STR.size(); i++) {
             if (is_digit(STR[i])) {
-                int value = 0;
+                T value = 0;
                 for (; i < STR.size() && is_digit(STR[i]); i++) {
-                    value = value * 10 + (STR[i] - '0');
+                    value = value * 10 + static_cast<T>(STR[i] - '0');
                 }
-                output.push_back(rpn_variant{Number{value}});
+                output.push_back(rpn_variant<T>{Number<T>{value}});
                 i--;
             } else if (is_operator(STR[i])) {
-                while (stack.size() > 0 && std::visit(precedence_visitor, stack.back()) >= get_precedence(STR[i]) && std::visit(visitor_type, stack.back()) != type::LEFTPAR) {
+                while (!stack.empty() && std::visit(precedence_visitor<T>, stack.back()) >= get_precedence(STR[i]) && std::visit(visitor_type<T>, stack.back()) != type::LEFTPAR) {
                     output.push_back(stack.back());
                     stack.pop_back();
                 }
-                stack.push_back(variant_from_char(STR[i]));
+                stack.push_back(variant_from_char<T>(STR[i]));
             } else if (is_left_parenthesis(STR[i])) {
-                stack.push_back(rpn_variant{LeftPar{}});
+                stack.push_back(rpn_variant<T>{LeftPar<T>{}});
             } else if (is_right_parenthesis(STR[i])) {
-                while (std::visit(visitor_type, stack.back()) != type::LEFTPAR) {
+                while (std::visit(visitor_type<T>, stack.back()) != type::LEFTPAR) {
                     output.push_back(stack.back());
                     stack.pop_back();
                 }
@@ -149,14 +161,14 @@ namespace {
         return output;
     }
 
-    template<FixedString STR>
-    consteval int get_result()
+    template<FixedString STR, typename T>
+    consteval T get_result()
     {
-        return do_rpn(parse_str<STR>());
+        return do_rpn<T>(parse_str<STR, T>());
     }
 }
 
 int main()
 {
-    return get_result<"6*((8+8)/2-1)">();
+    return get_result<"6*((8+8)/2-1)", int>();
 }
